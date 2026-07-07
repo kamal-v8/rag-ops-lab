@@ -1,27 +1,5 @@
-# Environments
 .env
-.env.*
 venv/
-env/
-ENV/
-
-# Python
 __pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-.coverage
-htmlcov/
-
-# Node (in case it runs outside the frontend folder)
-node_modules/
-npm-debug.log
-
-# OS
-.DS_Store
-Thumbs.db
-
-# IDEs
-.idea/
-.vscode/
-*.swp
+.DS_STORE
+docker-compose.override.yaml

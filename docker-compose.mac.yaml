@@ -1,0 +1,5 @@
+services:
+  api:
+    environment:
+      # host.docker.internal allows the Docker container to talk to the Mac host
+      - OLLAMA_HOST=http://host.docker.internal:11434
