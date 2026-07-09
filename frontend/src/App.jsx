@@ -1,6 +1,16 @@
 import { useState, useRef, useEffect } from 'react';
 
+const getOrCreateSessionId = () => {
+  let sessionId = localStorage.getItem('rag_session_id');
+  if (!sessionId) {
+    sessionId = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    localStorage.setItem('rag_session_id', sessionId);
+  }
+  return sessionId;
+};
+
 function App() {
+  const sessionId = getOrCreateSessionId();
   const [messages, setMessages] = useState([
     { role: 'ai', content: "Hello! I am your RAG AI Assistant. Upload a document to get started, or ask me anything!" }
   ]);
@@ -15,6 +25,23 @@ function App() {
   };
 
   useEffect(() => {
+    const fetchHistory = async () => {
+      try {
+        const res = await fetch(`http://localhost:8000/chat-history/${sessionId}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.history && data.history.length > 0) {
+            setMessages(data.history);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to load history");
+      }
+    };
+    fetchHistory();
+  }, [sessionId]);
+
+  useEffect(() => {
     scrollToBottom();
   }, [messages]);
 
@@ -22,8 +49,9 @@ function App() {
     const file = event.target.files[0];
     if (!file) return;
 
-    if (!file.name.endsWith('.txt')) {
-      setUploadStatus({ type: 'error', text: 'Only .txt files are supported.' });
+    const allowed = ['.txt', '.pdf', '.docx'];
+    if (!allowed.some(ext => file.name.endsWith(ext))) {
+      setUploadStatus({ type: 'error', text: 'Only .txt, .pdf, and .docx files are supported.' });
       return;
     }
 
@@ -59,10 +87,13 @@ function App() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:8000/rag-chat', {
+      const isResearch = userMsg.startsWith('/research');
+      const endpoint = isResearch ? 'http://localhost:8000/deep-research' : 'http://localhost:8000/rag-chat';
+      
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMsg }),
+        body: JSON.stringify({ session_id: sessionId, message: userMsg }),
       });
       const data = await response.json();
 
@@ -79,70 +110,73 @@ function App() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#0f172a] via-[#1e293b] to-[#0f172a] text-white flex flex-col items-center p-4 sm:p-8 font-sans">
+    <div className="min-h-screen bg-canvas text-ink flex flex-col items-center font-sans">
       
       {/* Header */}
-      <div className="w-full max-w-4xl flex justify-between items-center mb-8">
+      <header className="w-full max-w-3xl flex justify-between items-center py-8 px-4 sm:px-6">
         <div>
-          <h1 className="text-3xl font-extrabold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-indigo-400 tracking-tight">
+          <h1 className="text-4xl font-display text-ink tracking-tight mb-1">
             RAG Ops Lab
           </h1>
-          <p className="text-slate-400 text-sm mt-1">NVIDIA GPU Accelerated Local AI</p>
+          <p className="text-muted text-sm font-medium">Anthropic Design Edition</p>
         </div>
         
-        {/* Upload Button */}
         <div className="relative">
           <input 
             type="file" 
             id="file-upload" 
             className="hidden" 
-            accept=".txt" 
+            accept=".txt,.pdf,.docx" 
             onChange={handleFileUpload} 
           />
           <label 
             htmlFor="file-upload" 
-            className="cursor-pointer flex items-center gap-2 bg-white/10 hover:bg-white/20 border border-white/10 px-4 py-2 rounded-xl transition-all shadow-lg backdrop-blur-sm active:scale-95 text-sm font-medium"
+            className="cursor-pointer flex items-center gap-2 bg-surface-soft hover:bg-surface-card text-ink border border-hairline px-4 py-2.5 rounded-lg transition-colors text-sm font-medium"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-            Upload Knowledge
+            Upload
           </label>
         </div>
-      </div>
+      </header>
 
-      {/* Status Toast */}
-      {uploadStatus && (
-        <div className={`mb-6 px-4 py-3 rounded-lg border backdrop-blur-md flex items-center gap-3 animate-in fade-in slide-in-from-top-4 w-full max-w-4xl
-          ${uploadStatus.type === 'error' ? 'bg-red-500/10 border-red-500/30 text-red-200' : 
-            uploadStatus.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200' : 
-            'bg-blue-500/10 border-blue-500/30 text-blue-200'}`}
-        >
-          <span className="text-sm">{uploadStatus.text}</span>
-          <button onClick={() => setUploadStatus(null)} className="ml-auto opacity-70 hover:opacity-100">&times;</button>
-        </div>
-      )}
-
-      {/* Chat Glass Container */}
-      <div className="flex-1 w-full max-w-4xl bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden relative">
+      {/* Main Content Area */}
+      <main className="flex-1 w-full max-w-3xl flex flex-col relative px-4 sm:px-6 pb-32">
         
-        {/* Messages Area */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        {uploadStatus && (
+          <div className={`mb-8 px-4 py-3 rounded-lg border flex items-center gap-3 w-full
+            ${uploadStatus.type === 'error' ? 'bg-[#fcf0f0] border-error/20 text-error' : 
+              uploadStatus.type === 'success' ? 'bg-[#f0fcf4] border-success/20 text-success' : 
+              'bg-surface-soft border-hairline text-ink'}`}
+          >
+            <span className="text-sm font-medium">{uploadStatus.text}</span>
+            <button onClick={() => setUploadStatus(null)} className="ml-auto opacity-70 hover:opacity-100">&times;</button>
+          </div>
+        )}
+
+        <div className="flex-1 space-y-10">
           {messages.map((msg, idx) => (
-            <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[80%] rounded-2xl px-5 py-4 ${
+            <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+              <div className={`max-w-[85%] ${
                 msg.role === 'user' 
-                  ? 'bg-gradient-to-br from-indigo-500 to-blue-600 text-white shadow-md' 
-                  : 'bg-white/10 border border-white/5 text-slate-100 shadow-sm'
+                  ? 'bg-surface-soft border border-hairline text-ink rounded-2xl rounded-tr-sm px-5 py-4' 
+                  : 'text-body font-sans px-2'
               }`}>
-                <p className="whitespace-pre-wrap leading-relaxed">{msg.content}</p>
+                {msg.role === 'ai' && (
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-6 h-6 rounded bg-primary flex items-center justify-center">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                    </div>
+                    <span className="font-semibold text-ink text-sm">Assistant</span>
+                  </div>
+                )}
+                <p className="whitespace-pre-wrap leading-relaxed text-[15px]">{msg.content}</p>
                 
-                {/* Context Badge */}
                 {msg.context && msg.context.length > 0 && (
-                  <div className="mt-3 pt-3 border-t border-white/10">
-                    <p className="text-xs text-indigo-300 font-semibold mb-1 flex items-center gap-1">
-                      <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>
-                      Retrieved from ChromaDB
+                  <div className="mt-4 pt-3 border-t border-hairline">
+                    <p className="text-xs text-muted font-semibold mb-2 uppercase tracking-widest">
+                      Retrieved Context
                     </p>
-                    <p className="text-[11px] text-slate-400 italic line-clamp-2 bg-black/20 p-2 rounded-md">
+                    <p className="text-[13px] text-muted-soft italic line-clamp-3 bg-surface-soft p-3 rounded-md border border-hairline">
                       "{msg.context[0]}"
                     </p>
                   </div>
@@ -151,39 +185,40 @@ function App() {
             </div>
           ))}
           {isLoading && (
-            <div className="flex justify-start">
-              <div className="bg-white/10 border border-white/5 rounded-2xl px-5 py-4 flex items-center gap-2">
-                <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></div>
-                <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></div>
-                <div className="w-2 h-2 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></div>
+            <div className="flex justify-start px-2">
+              <div className="flex items-center gap-2">
+                <div className="w-6 h-6 rounded bg-primary/20 flex items-center justify-center animate-pulse">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" strokeWidth="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
+                </div>
+                <span className="text-muted text-sm animate-pulse">Thinking...</span>
               </div>
             </div>
           )}
           <div ref={messagesEndRef} />
         </div>
+      </main>
 
-        {/* Input Area */}
-        <div className="p-4 bg-black/20 border-t border-white/10">
-          <form onSubmit={sendMessage} className="relative flex items-center">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask anything about your documents..."
-              className="w-full bg-white/5 border border-white/10 rounded-full pl-6 pr-14 py-4 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all placeholder-slate-500 text-white"
-              disabled={isLoading}
-            />
-            <button 
-              type="submit" 
-              disabled={isLoading || !input.trim()}
-              className="absolute right-2 p-2 bg-indigo-500 hover:bg-indigo-600 disabled:bg-slate-700 disabled:opacity-50 rounded-full transition-all text-white flex items-center justify-center active:scale-95"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
-            </button>
-          </form>
-        </div>
-
+      {/* Input Area (Sticky Bottom) */}
+      <div className="fixed bottom-0 w-full bg-gradient-to-t from-canvas via-canvas to-transparent pt-10 pb-8 px-4 flex justify-center">
+        <form onSubmit={sendMessage} className="w-full max-w-3xl relative flex items-center shadow-sm">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Message Assistant..."
+            className="w-full bg-white border border-hairline rounded-xl pl-5 pr-14 py-4 focus:outline-none focus:border-primary transition-colors placeholder-muted-soft text-ink shadow-sm text-[15px]"
+            disabled={isLoading}
+          />
+          <button 
+            type="submit" 
+            disabled={isLoading || !input.trim()}
+            className="absolute right-3 p-2 bg-primary hover:bg-primary-active disabled:bg-primary-disabled disabled:text-muted rounded-lg transition-colors text-white flex items-center justify-center"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          </button>
+        </form>
       </div>
+
     </div>
   );
 }

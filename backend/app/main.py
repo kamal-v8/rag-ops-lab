@@ -1,11 +1,22 @@
+import io
+import json
 import logging
 import uuid
 
 import chromadb
-from fastapi import FastAPI, File, HTTPException, UploadFile
+import docx
+import fitz  # PyMuPDF
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from ollama import Client
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from .database import Base, engine, get_db
+from .models import ChatMessage
+from .services.research_service import perform_deep_research
+
+Base.metadata.create_all(bind=engine)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,6 +48,7 @@ ollama_client = Client(host="http://ollama:11434")
 
 
 class ChatRequest(BaseModel):
+    session_id: str
     message: str
 
 
@@ -47,19 +59,31 @@ class ChatRequest(BaseModel):
 
 @app.post("/upload", tags=["Documents"])
 async def upload_document(file: UploadFile = File(...)):
-    """Upload a .txt file, chunk it, and save the embeddings to ChromaDB."""
+    """Upload a .txt, .pdf, or .docx file, chunk it, and save the embeddings to ChromaDB."""
     if not collection:
         raise HTTPException(status_code=503, detail="ChromaDB not connected.")
 
-    if not file.filename.endswith(".txt"):
+    allowed_extensions = (".txt", ".pdf", ".docx")
+    if not file.filename.endswith(allowed_extensions):
         raise HTTPException(
-            status_code=400, detail="Only .txt files are supported right now."
+            status_code=400, detail="Only .txt, .pdf, and .docx files are supported."
         )
 
     try:
         # 1. Read the file content
         content = await file.read()
-        text = content.decode("utf-8")
+        text = ""
+
+        if file.filename.endswith(".txt"):
+            text = content.decode("utf-8")
+        elif file.filename.endswith(".pdf"):
+            pdf_document = fitz.open(stream=content, filetype="pdf")
+            for page in pdf_document:
+                text += page.get_text() + "\n\n"
+        elif file.filename.endswith(".docx"):
+            doc = docx.Document(io.BytesIO(content))
+            for paragraph in doc.paragraphs:
+                text += paragraph.text + "\n\n"
 
         # 2. Split the text into chunks (basic chunking by paragraphs)
         chunks = [chunk.strip() for chunk in text.split("\n\n") if chunk.strip()]
@@ -103,43 +127,126 @@ async def chat_endpoint(request: ChatRequest):
 
 
 @app.post("/rag-chat", tags=["AI"])
-async def rag_chat_endpoint(request: ChatRequest):
+async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
     """Query ChromaDB for context and then ask the AI model."""
     if not collection:
         raise HTTPException(status_code=503, detail="ChromaDB not connected.")
 
     try:
+        # Save user message to DB
+        user_msg = ChatMessage(
+            role="user", session_id=request.session_id, content=request.message
+        )
+        db.add(user_msg)
+        db.commit()
+
         # 1. Embed the user's question
-        query_response = ollama_client.embeddings(model='nomic-embed-text', prompt=request.message)
-        query_embedding = query_response['embedding']
+        query_response = ollama_client.embeddings(
+            model="nomic-embed-text", prompt=request.message
+        )
+        query_embedding = query_response["embedding"]
 
         # 2. Search ChromaDB for the 3 most relevant document chunks
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=3
-        )
+        results = collection.query(query_embeddings=[query_embedding], n_results=3)
 
         # Extract the text chunks from the search results
-        documents = results['documents'][0] if results['documents'] else []
+        documents = results["documents"][0] if results["documents"] else []
         context = "\n\n".join(documents)
 
         # 3. Construct the prompt for the AI
         system_prompt = (
-            "You are a helpful assistant. Use the following pieces of retrieved context to answer the question. "
-            "If you don't know the answer based on the context, just say that you don't know.\n\n"
+            "You are a helpful AI assistant. You have been provided with some retrieved context from the user's documents.\n"
+            "If the context is relevant to the user's question, use it to formulate your answer.\n"
+            "If the context is irrelevant to the question, completely ignore the context and answer the question using your own general knowledge.\n\n"
             f"Context:\n{context}"
         )
 
-        # 4. Ask phi3 using the context
-        chat_response = ollama_client.chat(model='phi3', messages=[
-            {'role': 'system', 'content': system_prompt},
-            {'role': 'user', 'content': request.message}
-        ])
+        # Build message history for conversational memory (last 10 messages)
+        history_records = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.session_id == request.session_id)
+            .order_by(ChatMessage.created_at.desc())
+            .limit(10)
+            .all()
+        )
+        history_records.reverse()  # Sort chronologically
 
-        return {
-            "response": chat_response['message']['content'],
-            "context_used": documents
-        }
+        # 4. Ask phi3 using the context and history
+        messages_payload = [{"role": "system", "content": system_prompt}]
+        for msg in history_records:
+            # Ollama expects 'assistant' instead of 'ai'
+            role_map = "assistant" if msg.role == "ai" else "user"
+            messages_payload.append({"role": role_map, "content": msg.content})
+
+        chat_response = ollama_client.chat(model="phi3", messages=messages_payload)
+
+        ai_reply = chat_response["message"]["content"]
+        context_str = json.dumps(documents)
+
+        # Save AI response to DB
+        ai_msg = ChatMessage(
+            role="ai",
+            session_id=request.session_id,
+            content=ai_reply,
+            context_used=context_str,
+        )
+        db.add(ai_msg)
+        db.commit()
+
+        return {"response": ai_reply, "context_used": documents}
     except Exception as e:
         logger.error(f"RAG Chat Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/chat-history/{session_id}", tags=["AI"])
+async def get_chat_history(session_id: str, db: Session = Depends(get_db)):
+    messages = (
+        db.query(ChatMessage)
+        .filter(ChatMessage.session_id == session_id)
+        .order_by(ChatMessage.created_at)
+        .all()
+    )
+    history = []
+    for msg in messages:
+        history.append(
+            {
+                "role": msg.role,
+                "content": msg.content,
+                "context_used": json.loads(msg.context_used)
+                if msg.context_used
+                else [],
+            }
+        )
+    return {"history": history}
+
+
+@app.post("/deep-research", tags=["AI"])
+async def deep_research_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
+    """Orchestrates the deep research flow and saves to history."""
+    try:
+        # Save user request to DB
+        user_msg = ChatMessage(
+            role="user", session_id=request.session_id, content=request.message
+        )
+        db.add(user_msg)
+        db.commit()
+
+        # Execute research
+        clean_query = request.message.replace("/research ", "").strip()
+        report = perform_deep_research(clean_query, ollama_client)
+
+        # Save AI response to DB
+        ai_msg = ChatMessage(
+            role="ai",
+            session_id=request.session_id,
+            content=report,
+            context_used='["Web Search"]',
+        )
+        db.add(ai_msg)
+        db.commit()
+
+        return {"response": report, "context_used": ["Web Search"]}
+    except Exception as e:
+        logger.error(f"Deep Research Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
