@@ -8,6 +8,7 @@ import docx
 import fitz  # PyMuPDF
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from ollama import Client
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -171,29 +172,40 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
         )
         history_records.reverse()  # Sort chronologically
 
-        # 4. Ask phi3 using the context and history
+        # 4. Stream response from phi3
         messages_payload = [{"role": "system", "content": system_prompt}]
         for msg in history_records:
             # Ollama expects 'assistant' instead of 'ai'
             role_map = "assistant" if msg.role == "ai" else "user"
             messages_payload.append({"role": role_map, "content": msg.content})
 
-        chat_response = ollama_client.chat(model="phi3", messages=messages_payload)
+        def generate_response():
+            stream = ollama_client.chat(model='phi3', messages=messages_payload, stream=True)
+            full_ai_response = ""
+            
+            # Send context first (optional, but good for UI)
+            yield f"data: {json.dumps({'type': 'context', 'context': documents})}\n\n"
 
-        ai_reply = chat_response["message"]["content"]
-        context_str = json.dumps(documents)
+            for chunk in stream:
+                content = chunk['message']['content']
+                full_ai_response += content
+                # Yield the word chunk in Server-Sent Events (SSE) format
+                yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
 
-        # Save AI response to DB
-        ai_msg = ChatMessage(
-            role="ai",
-            session_id=request.session_id,
-            content=ai_reply,
-            context_used=context_str,
-        )
-        db.add(ai_msg)
-        db.commit()
+            # Once the stream finishes, save the full message to the database
+            ai_msg = ChatMessage(
+                role='ai', 
+                session_id=request.session_id, 
+                content=full_ai_response, 
+                context_used=json.dumps(documents)
+            )
+            # We need a new db session here since the original one might close during streaming
+            new_db = next(get_db())
+            new_db.add(ai_msg)
+            new_db.commit()
+            new_db.close()
 
-        return {"response": ai_reply, "context_used": documents}
+        return StreamingResponse(generate_response(), media_type="text/event-stream")
     except Exception as e:
         logger.error(f"RAG Chat Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -83,7 +83,8 @@ function App() {
 
     const userMsg = input;
     setInput('');
-    setMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+    // Add user message AND an empty placeholder for the AI's upcoming response
+    setMessages(prev => [...prev, { role: 'user', content: userMsg }, { role: 'ai', content: '', context: [] }]);
     setIsLoading(true);
 
     try {
@@ -95,17 +96,75 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ session_id: sessionId, message: userMsg }),
       });
-      const data = await response.json();
 
-      if (response.ok) {
-        setMessages(prev => [...prev, { role: 'ai', content: data.response, context: data.context_used }]);
+      const contentType = response.headers.get("content-type");
+
+      // Check if it's our new Streaming format
+      if (contentType && contentType.includes("text/event-stream")) {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let done = false;
+        
+        setIsLoading(false); // Stop "Thinking..." animation as typing starts
+
+        while (!done) {
+          const { value, done: doneReading } = await reader.read();
+          done = doneReading;
+          if (value) {
+            const chunkValue = decoder.decode(value, { stream: true });
+            const lines = chunkValue.split('\n\n');
+            
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  setMessages(prev => {
+                    const newMessages = [...prev];
+                    // Create a new object for the last message to trigger React re-render properly
+                    const lastMsg = { ...newMessages[newMessages.length - 1] };
+                    
+                    if (data.type === 'context') {
+                      lastMsg.context = data.context;
+                    } else if (data.type === 'content') {
+                      lastMsg.content += data.content;
+                    }
+                    
+                    newMessages[newMessages.length - 1] = lastMsg;
+                    return newMessages;
+                  });
+                } catch (err) {
+                  // Ignore JSON parse errors for incomplete chunks
+                }
+              }
+            }
+          }
+        }
       } else {
-        setMessages(prev => [...prev, { role: 'ai', content: `Error: ${data.detail || 'Something went wrong.'}` }]);
+        // Fallback for standard JSON (like the Deep Research endpoint)
+        const data = await response.json();
+        setIsLoading(false);
+        if (response.ok) {
+          setMessages(prev => {
+            const newMessages = [...prev];
+            newMessages[newMessages.length - 1].content = data.response;
+            newMessages[newMessages.length - 1].context = data.context_used;
+            return newMessages;
+          });
+        } else {
+           setMessages(prev => {
+            const newMessages = [...prev];
+            newMessages[newMessages.length - 1].content = `Error: ${data.detail || 'Something went wrong.'}`;
+            return newMessages;
+          });
+        }
       }
     } catch (error) {
-      setMessages(prev => [...prev, { role: 'ai', content: 'Error: Could not reach the server. Is it running?' }]);
-    } finally {
       setIsLoading(false);
+      setMessages(prev => {
+        const newMessages = [...prev];
+        newMessages[newMessages.length - 1].content = 'Error: Could not reach the server.';
+        return newMessages;
+      });
     }
   };
 

@@ -1,9 +1,12 @@
 import logging
+
 import requests
 from bs4 import BeautifulSoup
 from duckduckgo_search import DDGS
+from fastapi.responses import StreamingResponse
 
 logger = logging.getLogger(__name__)
+
 
 def perform_deep_research(query: str, ollama_client) -> str:
     """Searches the web, scrapes the top 3 pages, and synthesizes a report."""
