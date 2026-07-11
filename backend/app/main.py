@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from .database import Base, engine, get_db
 from .models import ChatMessage
 from .services.research_service import perform_deep_research
+from .services.system_service import execute_system_command
 
 Base.metadata.create_all(bind=engine)
 
@@ -51,6 +52,7 @@ ollama_client = Client(host="http://ollama:11434")
 class ChatRequest(BaseModel):
     session_id: str
     message: str
+    force_web_search: bool = False
 
 
 # @app.get("/health", tags=["System"])
@@ -129,10 +131,7 @@ async def chat_endpoint(request: ChatRequest):
 
 @app.post("/rag-chat", tags=["AI"])
 async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
-    """Query ChromaDB for context and then ask the AI model."""
-    if not collection:
-        raise HTTPException(status_code=503, detail="ChromaDB not connected.")
-
+    """Agentic router that decides whether to search web, search docs, or just chat."""
     try:
         # Save user message to DB
         user_msg = ChatMessage(
@@ -141,28 +140,73 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
         db.add(user_msg)
         db.commit()
 
-        # 1. Embed the user's question
-        query_response = ollama_client.embeddings(
-            model="nomic-embed-text", prompt=request.message
+        # 1. Router Node: Ask Phi3 what to do
+        router_prompt = (
+            "Classify the intent of the user's message into EXACTLY ONE of these categories:\n"
+            "WEB_SEARCH: Asking about recent news, current events, or external research.\n"
+            "DOC_SEARCH: Asking about uploaded files, documents, or internal policies.\n"
+            "SYS_EXEC: Asking to run a system command, check server metrics, disk space, or ping.\n"
+            "GENERAL: Basic conversation, greetings, or general knowledge.\n"
+            "Output ONLY the category name."
         )
-        query_embedding = query_response["embedding"]
-
-        # 2. Search ChromaDB for the 3 most relevant document chunks
-        results = collection.query(query_embeddings=[query_embedding], n_results=3)
-
-        # Extract the text chunks from the search results
-        documents = results["documents"][0] if results["documents"] else []
-        context = "\n\n".join(documents)
-
-        # 3. Construct the prompt for the AI
-        system_prompt = (
-            "You are a helpful AI assistant. You have been provided with some retrieved context from the user's documents.\n"
-            "If the context is relevant to the user's question, use it to formulate your answer.\n"
-            "If the context is irrelevant to the question, completely ignore the context and answer the question using your own general knowledge.\n\n"
-            f"Context:\n{context}"
+        route_response = ollama_client.chat(
+            model="phi3",
+            messages=[
+                {"role": "system", "content": router_prompt},
+                {"role": "user", "content": request.message},
+            ],
         )
+        intent = route_response["message"]["content"].strip().upper()
+        if request.force_web_search:
+            intent = "WEB_SEARCH"
 
-        # Build message history for conversational memory (last 10 messages)
+        system_prompt = ""
+        user_prompt = ""
+        context_badge = []
+        citations_str = ""
+
+        # 2. Execute chosen tool based on AI's decision
+        if intent == "WEB_SEARCH":
+            # The agent decided to trigger SearxNG deep research
+            logger.info(f"Agent routed to WEB_SEARCH for: {request.message}")
+            system_prompt, user_prompt, citations_str = perform_deep_research(
+                request.message, ollama_client
+            )
+            context_badge = ["Web Search"]
+            
+        elif intent == "SYS_EXEC":
+            # Execute bash command and stream output
+            return StreamingResponse(
+                execute_system_command(request.message),
+                media_type="text/event-stream",
+            )
+
+        elif "DOC" in intent and collection:
+            logger.info(f"Agent routed to DOC_SEARCH for: {request.message}")
+            query_response = ollama_client.embeddings(
+                model="nomic-embed-text", prompt=request.message
+            )
+            results = collection.query(
+                query_embeddings=[query_response["embedding"]], n_results=3
+            )
+            documents = results["documents"][0] if results["documents"] else []
+            context = "\n\n".join(documents)
+
+            system_prompt = (
+                "You are a helpful AI assistant. Use the retrieved document context to formulate your answer.\n"
+                "If irrelevant, use general knowledge.\n\n"
+                f"Context:\n{context}"
+            )
+            user_prompt = request.message
+            context_badge = documents
+
+        else:
+            logger.info(f"Agent routed to GENERAL chat for: {request.message}")
+            system_prompt = "You are a helpful AI assistant."
+            user_prompt = request.message
+            context_badge = []
+
+        # 3. Build history and stream response
         history_records = (
             db.query(ChatMessage)
             .filter(ChatMessage.session_id == request.session_id)
@@ -170,44 +214,58 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
             .limit(10)
             .all()
         )
-        history_records.reverse()  # Sort chronologically
+        history_records.reverse()
 
-        # 4. Stream response from phi3
         messages_payload = [{"role": "system", "content": system_prompt}]
         for msg in history_records:
-            # Ollama expects 'assistant' instead of 'ai'
             role_map = "assistant" if msg.role == "ai" else "user"
-            messages_payload.append({"role": role_map, "content": msg.content})
+            # Only append if it's not the exact message we just processed
+            if msg.content != request.message or role_map != "user":
+                messages_payload.append({"role": role_map, "content": msg.content})
+
+        # Add the final augmented prompt
+        messages_payload.append({"role": "user", "content": user_prompt})
 
         def generate_response():
-            stream = ollama_client.chat(model='phi3', messages=messages_payload, stream=True)
+            if citations_str and not user_prompt:
+                # Fallback if web search failed
+                yield f"data: {json.dumps({'type': 'content', 'content': system_prompt})}\n\n"
+                return
+
+            stream = ollama_client.chat(
+                model="phi3", messages=messages_payload, stream=True
+            )
             full_ai_response = ""
-            
-            # Send context first (optional, but good for UI)
-            yield f"data: {json.dumps({'type': 'context', 'context': documents})}\n\n"
+
+            if context_badge:
+                yield f"data: {json.dumps({'type': 'context', 'context': context_badge})}\n\n"
 
             for chunk in stream:
-                content = chunk['message']['content']
+                content = chunk["message"]["content"]
                 full_ai_response += content
-                # Yield the word chunk in Server-Sent Events (SSE) format
                 yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
 
-            # Once the stream finishes, save the full message to the database
+            if citations_str:
+                sources_text = f"\n\n**Sources:**\n{citations_str}"
+                full_ai_response += sources_text
+                yield f"data: {json.dumps({'type': 'content', 'content': sources_text})}\n\n"
+
+            # Save final AI answer to database
             ai_msg = ChatMessage(
-                role='ai', 
-                session_id=request.session_id, 
-                content=full_ai_response, 
-                context_used=json.dumps(documents)
+                role="ai",
+                session_id=request.session_id,
+                content=full_ai_response,
+                context_used=json.dumps(context_badge),
             )
-            # We need a new db session here since the original one might close during streaming
             new_db = next(get_db())
             new_db.add(ai_msg)
             new_db.commit()
             new_db.close()
 
         return StreamingResponse(generate_response(), media_type="text/event-stream")
+
     except Exception as e:
-        logger.error(f"RAG Chat Error: {e}")
+        logger.error(f"Agent Router Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -232,10 +290,43 @@ async def get_chat_history(session_id: str, db: Session = Depends(get_db)):
         )
     return {"history": history}
 
+@app.get("/sessions", tags=["AI"])
+async def get_sessions(db: Session = Depends(get_db)):
+    """Returns a list of all chat sessions."""
+    from sqlalchemy import func
+    
+    latest_times = db.query(
+        ChatMessage.session_id, 
+        func.max(ChatMessage.created_at).label('updated_at')
+    ).group_by(ChatMessage.session_id).order_by(func.max(ChatMessage.created_at).desc()).all()
+    
+    sessions = []
+    for session_id, updated_at in latest_times:
+        first_msg = db.query(ChatMessage).filter(
+            ChatMessage.session_id == session_id,
+            ChatMessage.role == "user"
+        ).order_by(ChatMessage.created_at.asc()).first()
+        
+        title = first_msg.content[:40] + "..." if first_msg and len(first_msg.content) > 40 else (first_msg.content if first_msg else "New Chat")
+        
+        sessions.append({
+            "session_id": session_id,
+            "title": title,
+            "updated_at": updated_at.isoformat() if updated_at else None
+        })
+        
+    return {"sessions": sessions}
+
+@app.delete("/sessions/{session_id}", tags=["AI"])
+async def delete_session(session_id: str, db: Session = Depends(get_db)):
+    db.query(ChatMessage).filter(ChatMessage.session_id == session_id).delete()
+    db.commit()
+    return {"status": "success"}
+
 
 @app.post("/deep-research", tags=["AI"])
 async def deep_research_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
-    """Orchestrates the deep research flow and saves to history."""
+    """Orchestrates the deep research flow and streams the response."""
     try:
         # Save user request to DB
         user_msg = ChatMessage(
@@ -244,21 +335,58 @@ async def deep_research_endpoint(request: ChatRequest, db: Session = Depends(get
         db.add(user_msg)
         db.commit()
 
-        # Execute research
         clean_query = request.message.replace("/research ", "").strip()
-        report = perform_deep_research(clean_query, ollama_client)
-
-        # Save AI response to DB
-        ai_msg = ChatMessage(
-            role="ai",
-            session_id=request.session_id,
-            content=report,
-            context_used='["Web Search"]',
+        system_prompt, user_prompt, citations_str = perform_deep_research(
+            clean_query, ollama_client
         )
-        db.add(ai_msg)
-        db.commit()
 
-        return {"response": report, "context_used": ["Web Search"]}
+        def generate_research_response():
+            # If no results found, perform_deep_research returns a simple string message
+            if not user_prompt:
+                yield f"data: {json.dumps({'type': 'content', 'content': system_prompt})}\n\n"
+                return
+
+            # Stream the actual AI generation
+            stream = ollama_client.chat(
+                model="phi3",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                stream=True,
+            )
+
+            full_ai_response = ""
+
+            # Send the Web Search context badge to UI
+            yield f"data: {json.dumps({'type': 'context', 'context': ['Web Search']})}\n\n"
+
+            for chunk in stream:
+                content = chunk["message"]["content"]
+                full_ai_response += content
+                yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
+
+            # Stream the citations at the end
+            sources_text = f"\n\n**Sources:**\n{citations_str}"
+            full_ai_response += sources_text
+            yield f"data: {json.dumps({'type': 'content', 'content': sources_text})}\n\n"
+
+            # Save to DB
+            ai_msg = ChatMessage(
+                role="ai",
+                session_id=request.session_id,
+                content=full_ai_response,
+                context_used='["Web Search"]',
+            )
+            new_db = next(get_db())
+            new_db.add(ai_msg)
+            new_db.commit()
+            new_db.close()
+
+        return StreamingResponse(
+            generate_research_response(), media_type="text/event-stream"
+        )
+
     except Exception as e:
         logger.error(f"Deep Research Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
