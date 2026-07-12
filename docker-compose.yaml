@@ -80,7 +80,7 @@ services:
     ports:
       - "11433:11433"
     volumes:
-      - ollama_models:/root/.ollama
+      - ./ollama_data:/root/.ollama
     restart: unless-stopped
 
   searxng:
@@ -95,4 +95,3 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  ollama_models:

@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from ollama import Client
 from pydantic import BaseModel
+from sentence_transformers import CrossEncoder
 from sqlalchemy.orm import Session
 
 from .database import Base, engine, get_db
@@ -47,6 +48,10 @@ except Exception as e:
     logger.error(f"Failed to connect to ChromaDB: {e}")
 
 ollama_client = Client(host="http://ollama:11434")
+
+logger.info("Loading CrossEncoder model...")
+cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+logger.info("CrossEncoder loaded.")
 
 
 class ChatRequest(BaseModel):
@@ -173,7 +178,7 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
                 request.message, ollama_client
             )
             context_badge = ["Web Search"]
-            
+
         elif intent == "SYS_EXEC":
             # Execute bash command and stream output
             return StreamingResponse(
@@ -187,9 +192,18 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
                 model="nomic-embed-text", prompt=request.message
             )
             results = collection.query(
-                query_embeddings=[query_response["embedding"]], n_results=3
+                query_embeddings=[query_response["embedding"]], n_results=15
             )
-            documents = results["documents"][0] if results["documents"] else []
+            retrieved_docs = results["documents"][0] if results["documents"] else []
+
+            if retrieved_docs:
+                pairs = [[request.message, doc] for doc in retrieved_docs]
+                scores = cross_encoder.predict(pairs)
+                scored_docs = sorted(zip(scores, retrieved_docs), key=lambda x: x[0], reverse=True)
+                documents = [doc for score, doc in scored_docs[:3]]
+                logger.info(f"Re-ranker top score: {scored_docs[0][0]:.4f}")
+            else:
+                documents = []
             context = "\n\n".join(documents)
 
             system_prompt = (
@@ -290,32 +304,46 @@ async def get_chat_history(session_id: str, db: Session = Depends(get_db)):
         )
     return {"history": history}
 
+
 @app.get("/sessions", tags=["AI"])
 async def get_sessions(db: Session = Depends(get_db)):
     """Returns a list of all chat sessions."""
     from sqlalchemy import func
-    
-    latest_times = db.query(
-        ChatMessage.session_id, 
-        func.max(ChatMessage.created_at).label('updated_at')
-    ).group_by(ChatMessage.session_id).order_by(func.max(ChatMessage.created_at).desc()).all()
-    
+
+    latest_times = (
+        db.query(
+            ChatMessage.session_id, func.max(ChatMessage.created_at).label("updated_at")
+        )
+        .group_by(ChatMessage.session_id)
+        .order_by(func.max(ChatMessage.created_at).desc())
+        .all()
+    )
+
     sessions = []
     for session_id, updated_at in latest_times:
-        first_msg = db.query(ChatMessage).filter(
-            ChatMessage.session_id == session_id,
-            ChatMessage.role == "user"
-        ).order_by(ChatMessage.created_at.asc()).first()
-        
-        title = first_msg.content[:40] + "..." if first_msg and len(first_msg.content) > 40 else (first_msg.content if first_msg else "New Chat")
-        
-        sessions.append({
-            "session_id": session_id,
-            "title": title,
-            "updated_at": updated_at.isoformat() if updated_at else None
-        })
-        
+        first_msg = (
+            db.query(ChatMessage)
+            .filter(ChatMessage.session_id == session_id, ChatMessage.role == "user")
+            .order_by(ChatMessage.created_at.asc())
+            .first()
+        )
+
+        title = (
+            first_msg.content[:40] + "..."
+            if first_msg and len(first_msg.content) > 40
+            else (first_msg.content if first_msg else "New Chat")
+        )
+
+        sessions.append(
+            {
+                "session_id": session_id,
+                "title": title,
+                "updated_at": updated_at.isoformat() if updated_at else None,
+            }
+        )
+
     return {"sessions": sessions}
+
 
 @app.delete("/sessions/{session_id}", tags=["AI"])
 async def delete_session(session_id: str, db: Session = Depends(get_db)):

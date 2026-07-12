@@ -25,6 +25,7 @@ function App() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState(null);
+  const [ingestedFiles, setIngestedFiles] = useState([]);
   const [abortController, setAbortController] = useState(null);
 
   const messagesEndRef = useRef(null);
@@ -128,6 +129,7 @@ function App() {
       const data = await response.json();
       if (response.ok) {
         setUploadStatus({ type: "success", text: "UPLOAD_SUCCESS: " + data.message });
+        setIngestedFiles(prev => [...prev, file.name]);
       } else {
         setUploadStatus({ type: "error", text: "ERR: " + (data.detail || "Upload failed") });
       }
@@ -424,6 +426,23 @@ function App() {
                </div>
             </div>
          </div>
+
+         {/* Ingested Files */}
+         {ingestedFiles.length > 0 && (
+            <div className="p-4 border-b border-hairline bg-surface-dark-elevated">
+               <div className="text-[10px] text-primary font-bold uppercase tracking-widest mb-3 pb-2 border-b border-hairline/30">
+                  RECENTLY_INGESTED_FILES
+               </div>
+               <div className="space-y-2">
+                  {ingestedFiles.map((fname, idx) => (
+                     <div key={idx} className="flex items-center gap-2 text-[11px] text-on-dark-soft font-mono bg-surface-dark px-2 py-1.5 border border-hairline/20 rounded-sm">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-success"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                        <span className="truncate">{fname}</span>
+                     </div>
+                  ))}
+               </div>
+            </div>
+         )}
 
          {/* Context Logs */}
          <div className="flex-1 overflow-y-auto p-4 bg-surface-dark-soft">
