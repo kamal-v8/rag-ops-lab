@@ -145,82 +145,56 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
         db.add(user_msg)
         db.commit()
 
-        # 1. Router Node: Ask Phi3 what to do
-        router_prompt = (
-            "Classify the intent of the user's message into EXACTLY ONE of these categories:\n"
-            "WEB_SEARCH: Asking about recent news, current events, or external research.\n"
-            "DOC_SEARCH: Asking about uploaded files, documents, or internal policies.\n"
-            "SYS_EXEC: Asking to run a system command, check server metrics, disk space, or ping.\n"
-            "GENERAL: Basic conversation, greetings, or general knowledge.\n"
-            "Output ONLY the category name."
-        )
-        route_response = ollama_client.chat(
-            model="phi3",
-            messages=[
-                {"role": "system", "content": router_prompt},
-                {"role": "user", "content": request.message},
-            ],
-        )
-        intent = route_response["message"]["content"].strip().upper()
+        # 1. Prepare Tools for Agentic Loop
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search_documents",
+                    "description": "Search the local vector database for information about uploaded files, documents, or internal knowledge.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "The exact search query to look up in the vector database"}
+                        },
+                        "required": ["query"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "execute_system_command",
+                    "description": "Execute a raw Linux bash command on the host server. Use this to check metrics, list files, or interact with the OS.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string", "description": "The raw bash command to run (e.g. 'ls -la', 'ping google.com')"}
+                        },
+                        "required": ["command"]
+                    }
+                }
+            }
+        ]
+
+        # Dynamically inject Web Search tool ONLY if the user enables it in the UI
         if request.force_web_search:
-            intent = "WEB_SEARCH"
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "search_web",
+                    "description": "Search the live internet via SearxNG for recent news, events, or external information not found in local documents.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string", "description": "The web search query"}
+                        },
+                        "required": ["query"]
+                    }
+                }
+            })
 
-        system_prompt = ""
-        user_prompt = ""
-        context_badge = []
-        citations_str = ""
-
-        # 2. Execute chosen tool based on AI's decision
-        if intent == "WEB_SEARCH":
-            # The agent decided to trigger SearxNG deep research
-            logger.info(f"Agent routed to WEB_SEARCH for: {request.message}")
-            system_prompt, user_prompt, citations_str = perform_deep_research(
-                request.message, ollama_client
-            )
-            context_badge = ["Web Search"]
-
-        elif intent == "SYS_EXEC":
-            # Execute bash command and stream output
-            return StreamingResponse(
-                execute_system_command(request.message),
-                media_type="text/event-stream",
-            )
-
-        elif "DOC" in intent and collection:
-            logger.info(f"Agent routed to DOC_SEARCH for: {request.message}")
-            query_response = ollama_client.embeddings(
-                model="nomic-embed-text", prompt=request.message
-            )
-            results = collection.query(
-                query_embeddings=[query_response["embedding"]], n_results=15
-            )
-            retrieved_docs = results["documents"][0] if results["documents"] else []
-
-            if retrieved_docs:
-                pairs = [[request.message, doc] for doc in retrieved_docs]
-                scores = cross_encoder.predict(pairs)
-                scored_docs = sorted(zip(scores, retrieved_docs), key=lambda x: x[0], reverse=True)
-                documents = [doc for score, doc in scored_docs[:3]]
-                logger.info(f"Re-ranker top score: {scored_docs[0][0]:.4f}")
-            else:
-                documents = []
-            context = "\n\n".join(documents)
-
-            system_prompt = (
-                "You are a helpful AI assistant. Use the retrieved document context to formulate your answer.\n"
-                "If irrelevant, use general knowledge.\n\n"
-                f"Context:\n{context}"
-            )
-            user_prompt = request.message
-            context_badge = documents
-
-        else:
-            logger.info(f"Agent routed to GENERAL chat for: {request.message}")
-            system_prompt = "You are a helpful AI assistant."
-            user_prompt = request.message
-            context_badge = []
-
-        # 3. Build history and stream response
+        # 2. Build history payload
         history_records = (
             db.query(ChatMessage)
             .filter(ChatMessage.session_id == request.session_id)
@@ -230,46 +204,98 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
         )
         history_records.reverse()
 
+        system_prompt = "You are a highly capable DevOps AI agent. You have access to tools. ALWAYS use tools if the user asks for something outside your base knowledge. If you use a tool, synthesize the tool's output into a final answer for the user."
         messages_payload = [{"role": "system", "content": system_prompt}]
         for msg in history_records:
             role_map = "assistant" if msg.role == "ai" else "user"
-            # Only append if it's not the exact message we just processed
             if msg.content != request.message or role_map != "user":
                 messages_payload.append({"role": role_map, "content": msg.content})
 
-        # Add the final augmented prompt
-        messages_payload.append({"role": "user", "content": user_prompt})
+        messages_payload.append({"role": "user", "content": request.message})
 
         def generate_response():
-            if citations_str and not user_prompt:
-                # Fallback if web search failed
-                yield f"data: {json.dumps({'type': 'content', 'content': system_prompt})}\n\n"
+            import subprocess
+            context_badge = []
+            citations_str = ""
+            
+            # Step 1: Agent Router (Call LLM with tools)
+            try:
+                response = ollama_client.chat(model="qwen2.5:3b", messages=messages_payload, tools=tools)
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'content', 'content': f'**Ollama Error:** Model qwen2.5:3b might not be downloaded. ({e})'})}\n\n"
                 return
+            
+            if response.get("message", {}).get("tool_calls"):
+                messages_payload.append(response["message"])
+                for tool_call in response["message"]["tool_calls"]:
+                    func_name = tool_call["function"]["name"]
+                    args = tool_call["function"]["arguments"]
+                    
+                    yield f"data: {json.dumps({'type': 'content', 'content': f'> Agent invoking: `{func_name}`...\\n\\n'})}\n\n"
+                    
+                    if func_name == "search_documents":
+                        context_badge.append("Doc Search")
+                        query = args.get("query", "")
+                        if collection:
+                            query_response = ollama_client.embeddings(model="nomic-embed-text", prompt=query)
+                            results = collection.query(query_embeddings=[query_response["embedding"]], n_results=15)
+                            retrieved_docs = results["documents"][0] if results["documents"] else []
+                            if retrieved_docs:
+                                pairs = [[query, doc] for doc in retrieved_docs]
+                                scores = cross_encoder.predict(pairs)
+                                scored_docs = sorted(zip(scores, retrieved_docs), key=lambda x: x[0], reverse=True)
+                                docs = [doc for score, doc in scored_docs[:3]]
+                                messages_payload.append({"role": "tool", "content": "\n\n".join(docs), "name": func_name})
+                            else:
+                                messages_payload.append({"role": "tool", "content": "No documents found in database.", "name": func_name})
+                        else:
+                            messages_payload.append({"role": "tool", "content": "Database offline.", "name": func_name})
+                            
+                    elif func_name == "search_web":
+                        context_badge.append("Web Search")
+                        query = args.get("query", "")
+                        sys_p, _, citations_str = perform_deep_research(query, ollama_client)
+                        messages_payload.append({"role": "tool", "content": sys_p, "name": func_name})
+                        
+                    elif func_name == "execute_system_command":
+                        context_badge.append("System Exec")
+                        command = args.get("command", "")
+                        try:
+                            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=15)
+                            out = result.stdout if result.returncode == 0 else result.stderr
+                            if not out.strip():
+                                out = "Command executed successfully with no output."
+                            messages_payload.append({"role": "tool", "content": out, "name": func_name})
+                        except Exception as e:
+                            messages_payload.append({"role": "tool", "content": f"Error executing command: {e}", "name": func_name})
 
-            stream = ollama_client.chat(
-                model="phi3", messages=messages_payload, stream=True
-            )
-            full_ai_response = ""
-
-            if context_badge:
-                yield f"data: {json.dumps({'type': 'context', 'context': context_badge})}\n\n"
-
-            for chunk in stream:
-                content = chunk["message"]["content"]
-                full_ai_response += content
-                yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
-
-            if citations_str:
-                sources_text = f"\n\n**Sources:**\n{citations_str}"
-                full_ai_response += sources_text
-                yield f"data: {json.dumps({'type': 'content', 'content': sources_text})}\n\n"
+                # Step 2: Stream final synthesis
+                stream = ollama_client.chat(model="qwen2.5:3b", messages=messages_payload, stream=True)
+                full_ai_response = ""
+                
+                if context_badge:
+                    yield f"data: {json.dumps({'type': 'context', 'context': context_badge})}\n\n"
+                    
+                for chunk in stream:
+                    content = chunk["message"]["content"]
+                    full_ai_response += content
+                    yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
+                    
+                if citations_str:
+                    sources_text = f"\n\n**Sources:**\n{citations_str}"
+                    full_ai_response += sources_text
+                    yield f"data: {json.dumps({'type': 'content', 'content': sources_text})}\n\n"
+            else:
+                # No tools called, just output the normal chat response
+                full_ai_response = response["message"]["content"]
+                yield f"data: {json.dumps({'type': 'content', 'content': full_ai_response})}\n\n"
 
             # Save final AI answer to database
             ai_msg = ChatMessage(
                 role="ai",
                 session_id=request.session_id,
                 content=full_ai_response,
-                context_used=json.dumps(context_badge),
+                context_used=json.dumps(context_badge) if 'context_badge' in locals() else "[]",
             )
             new_db = next(get_db())
             new_db.add(ai_msg)
