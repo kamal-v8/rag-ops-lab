@@ -27,6 +27,7 @@ function App() {
   const [uploadStatus, setUploadStatus] = useState(null);
   const [ingestedFiles, setIngestedFiles] = useState([]);
   const [abortController, setAbortController] = useState(null);
+  const abortControllerRef = useRef(null);
 
   const messagesEndRef = useRef(null);
   const contextEndRef = useRef(null);
@@ -91,6 +92,7 @@ function App() {
   }, [activeContext]);
 
   const handleNewChat = () => {
+    if (abortControllerRef.current) abortControllerRef.current.abort();
     const newSid = getNewSessionId();
     localStorage.setItem("rag_session_id", newSid);
     setSessionId(newSid);
@@ -147,7 +149,9 @@ function App() {
     setMessages((prev) => [...prev, { role: "user", content: userMsg }, { role: "ai", content: "", context: [] }]);
     setIsLoading(true);
 
+    if (abortControllerRef.current) abortControllerRef.current.abort();
     const controller = new AbortController();
+    abortControllerRef.current = controller;
     setAbortController(controller);
 
     try {
@@ -246,6 +250,7 @@ function App() {
             <div 
               key={s.session_id} 
               onClick={() => {
+                if (abortControllerRef.current) abortControllerRef.current.abort();
                 localStorage.setItem("rag_session_id", s.session_id);
                 setSessionId(s.session_id);
               }}
