@@ -35,6 +35,6 @@ async def execute_system_command(user_query: str):
         yield f"data: {{\"type\": \"content\", \"content\": \"{formatted_output}\\n\"}}\n\n"
         
     except subprocess.TimeoutExpired:
-         yield f"data: {{\"type\": \"content\", \"content\": \"ERR: Command timed out after 10 seconds.\\n\"}}\n\n"
+         yield "data: {{\"type\": \"content\", \"content\": \"ERR: Command timed out after 10 seconds.\\n\"}}\n\n"
     except Exception as e:
          yield f"data: {{\"type\": \"content\", \"content\": \"ERR: {str(e)}\\n\"}}\n\n"

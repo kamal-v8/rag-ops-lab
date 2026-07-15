@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 from .database import Base, engine, get_db
 from .models import ChatMessage
 from .services.research_service import perform_deep_research
-from .services.system_service import execute_system_command
 
 Base.metadata.create_all(bind=engine)
 
