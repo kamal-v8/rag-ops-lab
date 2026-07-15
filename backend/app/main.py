@@ -204,7 +204,11 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
         )
         history_records.reverse()
 
-        system_prompt = "You are a highly capable DevOps AI agent. You have access to tools. ALWAYS use tools if the user asks for something outside your base knowledge. If you use a tool, synthesize the tool's output into a final answer for the user."
+        system_prompt = (
+            "You are a highly capable DevOps AI agent. You have access to tools. "
+            "CRITICAL RULE: If the user asks about recent events, modern tech terms, people, or ANY fact you aren't 100% certain about, "
+            "you MUST use the `search_web` tool. Do not guess or say the term is unclear. ALWAYS search first."
+        )
         messages_payload = [{"role": "system", "content": system_prompt}]
         for msg in history_records:
             role_map = "assistant" if msg.role == "ai" else "user"
@@ -231,7 +235,7 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
                     func_name = tool_call["function"]["name"]
                     args = tool_call["function"]["arguments"]
                     
-                    yield f"data: {json.dumps({'type': 'content', 'content': f'> Agent invoking: `{func_name}`...\\n\\n'})}\n\n"
+                    yield f"data: {json.dumps({'type': 'content', 'content': f'> Agent invoking: `{func_name}`...\n\n'})}\n\n"
                     
                     if func_name == "search_documents":
                         context_badge.append("Doc Search")
@@ -254,8 +258,8 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
                     elif func_name == "search_web":
                         context_badge.append("Web Search")
                         query = args.get("query", "")
-                        sys_p, _, citations_str = perform_deep_research(query, ollama_client)
-                        messages_payload.append({"role": "tool", "content": sys_p, "name": func_name})
+                        sys_p, usr_p, citations_str = perform_deep_research(query, ollama_client)
+                        messages_payload.append({"role": "tool", "content": f"{sys_p}\n\n{usr_p}", "name": func_name})
                         
                     elif func_name == "execute_system_command":
                         context_badge.append("System Exec")
