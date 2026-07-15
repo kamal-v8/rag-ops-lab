@@ -221,89 +221,94 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
             context_badge = []
             citations_str = ""
             
-            # Step 1: Agent Router (Call LLM with tools)
-            try:
-                response = ollama_client.chat(model="qwen2.5:3b", messages=messages_payload, tools=tools)
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'content', 'content': f'**Ollama Error:** Model qwen2.5:3b might not be downloaded. ({e})'})}\n\n"
-                return
-            
-            if response.get("message", {}).get("tool_calls"):
-                messages_payload.append(response["message"])
-                for tool_call in response["message"]["tool_calls"]:
-                    func_name = tool_call["function"]["name"]
-                    args = tool_call["function"]["arguments"]
-                    
-                    yield f"data: {json.dumps({'type': 'content', 'content': f'> Agent invoking: `{func_name}`...\n\n'})}\n\n"
-                    
-                    if func_name == "search_documents":
-                        context_badge.append("Doc Search")
-                        query = args.get("query", "")
-                        if collection:
-                            query_response = ollama_client.embeddings(model="nomic-embed-text", prompt=query)
-                            results = collection.query(query_embeddings=[query_response["embedding"]], n_results=15)
-                            retrieved_docs = results["documents"][0] if results["documents"] else []
-                            if retrieved_docs:
-                                pairs = [[query, doc] for doc in retrieved_docs]
-                                scores = cross_encoder.predict(pairs)
-                                scored_docs = sorted(zip(scores, retrieved_docs), key=lambda x: x[0], reverse=True)
-                                docs = [doc for score, doc in scored_docs[:3]]
-                                messages_payload.append({"role": "tool", "content": "\n\n".join(docs), "name": func_name})
-                            else:
-                                messages_payload.append({"role": "tool", "content": "No documents found in database.", "name": func_name})
-                        else:
-                            messages_payload.append({"role": "tool", "content": "Database offline.", "name": func_name})
-                            
-                    elif func_name == "search_web":
-                        context_badge.append("Web Search")
-                        query = args.get("query", "")
-                        sys_p, usr_p, citations_str = perform_deep_research(query, ollama_client)
-                        messages_payload.append({"role": "tool", "content": f"{sys_p}\n\n{usr_p}", "name": func_name})
-                        
-                    elif func_name == "execute_system_command":
-                        context_badge.append("System Exec")
-                        command = args.get("command", "")
-                        try:
-                            result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=15)
-                            out = result.stdout if result.returncode == 0 else result.stderr
-                            if not out.strip():
-                                out = "Command executed successfully with no output."
-                            messages_payload.append({"role": "tool", "content": out, "name": func_name})
-                        except Exception as e:
-                            messages_payload.append({"role": "tool", "content": f"Error executing command: {e}", "name": func_name})
-
-                # Step 2: Stream final synthesis
-                stream = ollama_client.chat(model="qwen2.5:3b", messages=messages_payload, stream=True)
-                full_ai_response = ""
+            MAX_ITERATIONS = 4
+            for iteration in range(MAX_ITERATIONS):
+                try:
+                    response = ollama_client.chat(model="qwen2.5:3b", messages=messages_payload, tools=tools)
+                except Exception as e:
+                    yield f"data: {json.dumps({'type': 'content', 'content': f'**Ollama Error:** Model qwen2.5:3b might not be downloaded. ({e})'})}\n\n"
+                    return
                 
-                if context_badge:
-                    yield f"data: {json.dumps({'type': 'context', 'context': context_badge})}\n\n"
+                if response.get("message", {}).get("tool_calls"):
+                    messages_payload.append(response["message"])
+                    for tool_call in response["message"]["tool_calls"]:
+                        func_name = tool_call["function"]["name"]
+                        args = tool_call["function"]["arguments"]
+                        
+                        yield f"data: {json.dumps({'type': 'content', 'content': f'> Agent invoking: `{func_name}`...\\n\\n'})}\n\n"
+                        
+                        if func_name == "search_documents":
+                            context_badge.append("Doc Search")
+                            query = args.get("query", "")
+                            if collection:
+                                query_response = ollama_client.embeddings(model="nomic-embed-text", prompt=query)
+                                results = collection.query(query_embeddings=[query_response["embedding"]], n_results=15)
+                                retrieved_docs = results["documents"][0] if results["documents"] else []
+                                if retrieved_docs:
+                                    pairs = [[query, doc] for doc in retrieved_docs]
+                                    scores = cross_encoder.predict(pairs)
+                                    scored_docs = sorted(zip(scores, retrieved_docs), key=lambda x: x[0], reverse=True)
+                                    docs = [doc for score, doc in scored_docs[:3]]
+                                    messages_payload.append({"role": "tool", "content": "\\n\\n".join(docs), "name": func_name})
+                                else:
+                                    messages_payload.append({"role": "tool", "content": "No documents found in database.", "name": func_name})
+                            else:
+                                messages_payload.append({"role": "tool", "content": "Database offline.", "name": func_name})
+                                
+                        elif func_name == "search_web":
+                            context_badge.append("Web Search")
+                            query = args.get("query", "")
+                            sys_p, usr_p, citations_str = perform_deep_research(query, ollama_client)
+                            messages_payload.append({"role": "tool", "content": f"{sys_p}\\n\\n{usr_p}", "name": func_name})
+                            
+                        elif func_name == "execute_system_command":
+                            context_badge.append("System Exec")
+                            command = args.get("command", "")
+                            try:
+                                result = subprocess.run(command, shell=True, capture_output=True, text=True, timeout=15)
+                                out = result.stdout if result.returncode == 0 else result.stderr
+                                if not out.strip():
+                                    out = "Command executed successfully with no output."
+                                messages_payload.append({"role": "tool", "content": out, "name": func_name})
+                            except Exception as e:
+                                messages_payload.append({"role": "tool", "content": f"Error executing command: {e}", "name": func_name})
                     
-                for chunk in stream:
-                    content = chunk["message"]["content"]
-                    full_ai_response += content
-                    yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
+                    # Continue the loop to let the agent evaluate the tool output and decide next steps
+                    continue
+                else:
+                    # No tools called. The agent is ready to give the final answer.
+                    stream = ollama_client.chat(model="qwen2.5:3b", messages=messages_payload, stream=True)
+                    full_ai_response = ""
                     
-                if citations_str:
-                    sources_text = f"\n\n**Sources:**\n{citations_str}"
-                    full_ai_response += sources_text
-                    yield f"data: {json.dumps({'type': 'content', 'content': sources_text})}\n\n"
-            else:
-                # No tools called, just output the normal chat response
-                full_ai_response = response["message"]["content"]
-                yield f"data: {json.dumps({'type': 'content', 'content': full_ai_response})}\n\n"
-
-            # Save final AI answer to database
-            ai_msg = ChatMessage(
-                role="ai",
-                session_id=request.session_id,
-                content=full_ai_response,
-                context_used=json.dumps(context_badge) if 'context_badge' in locals() else "[]",
-            )
-            new_db = next(get_db())
-            new_db.add(ai_msg)
-            new_db.commit()
-            new_db.close()
+                    if context_badge:
+                        yield f"data: {json.dumps({'type': 'context', 'context': list(set(context_badge))})}\n\n"
+                        
+                    for chunk in stream:
+                        content = chunk["message"]["content"]
+                        full_ai_response += content
+                        yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
+                        
+                    if citations_str:
+                        sources_text = f"\\n\\n**Sources:**\\n{citations_str}"
+                        full_ai_response += sources_text
+                        yield f"data: {json.dumps({'type': 'content', 'content': sources_text})}\n\n"
+                        
+                    # Save final AI answer to database
+                    ai_msg = ChatMessage(
+                        role="ai",
+                        session_id=request.session_id,
+                        content=full_ai_response,
+                        context_used=json.dumps(list(set(context_badge))) if context_badge else "[]",
+                    )
+                    new_db = next(get_db())
+                    new_db.add(ai_msg)
+                    new_db.commit()
+                    new_db.close()
+                    
+                    return # Exit the generator completely
+            
+            # If the loop finishes without returning, it means it hit the iteration limit
+            yield f"data: {json.dumps({'type': 'content', 'content': '\\n\\n*Agent stopped after reaching maximum iterations.*'})}\n\n"
 
         return StreamingResponse(generate_response(), media_type="text/event-stream")
 
