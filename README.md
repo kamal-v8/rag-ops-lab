@@ -1,4 +1,4 @@
-# RAG Ops Lab 🤖
+# RAG Ops Lab 
 
 ![CI/CD Pipeline](https://github.com/kamal-v8/rag-ops-lab/actions/workflows/ci.yml/badge.svg)
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)

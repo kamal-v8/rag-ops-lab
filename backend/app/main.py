@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from .database import Base, engine, get_db
 from .models import ChatMessage
 from .services.research_service import perform_deep_research
-
+from prometheus_fastapi_instrumentator import Instrumentator
 Base.metadata.create_all(bind=engine)
 
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +28,7 @@ app = FastAPI(
     description="Backend API for the RAG Knowledge Base and Agents",
     version="0.1.0",
 )
+Instrumentator().instrument(app).expose(app)
 
 # Enable CORS so the React frontend can talk to the API
 app.add_middleware(
@@ -220,7 +221,7 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
             import subprocess
             context_badge = []
             citations_str = ""
-            
+
             MAX_ITERATIONS = 4
             for iteration in range(MAX_ITERATIONS):
                 try:
@@ -228,15 +229,15 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
                 except Exception as e:
                     yield f"data: {json.dumps({'type': 'content', 'content': f'**Ollama Error:** Model qwen2.5:3b might not be downloaded. ({e})'})}\n\n"
                     return
-                
+
                 if response.get("message", {}).get("tool_calls"):
                     messages_payload.append(response["message"])
                     for tool_call in response["message"]["tool_calls"]:
                         func_name = tool_call["function"]["name"]
                         args = tool_call["function"]["arguments"]
-                        
+
                         yield f"data: {json.dumps({'type': 'content', 'content': f'> Agent invoking: `{func_name}`...\\n\\n'})}\n\n"
-                        
+
                         if func_name == "search_documents":
                             context_badge.append("Doc Search")
                             query = args.get("query", "")
@@ -254,13 +255,13 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
                                     messages_payload.append({"role": "tool", "content": "No documents found in database.", "name": func_name})
                             else:
                                 messages_payload.append({"role": "tool", "content": "Database offline.", "name": func_name})
-                                
+
                         elif func_name == "search_web":
                             context_badge.append("Web Search")
                             query = args.get("query", "")
                             sys_p, usr_p, citations_str = perform_deep_research(query, ollama_client)
                             messages_payload.append({"role": "tool", "content": f"{sys_p}\\n\\n{usr_p}", "name": func_name})
-                            
+
                         elif func_name == "execute_system_command":
                             context_badge.append("System Exec")
                             command = args.get("command", "")
@@ -272,27 +273,27 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
                                 messages_payload.append({"role": "tool", "content": out, "name": func_name})
                             except Exception as e:
                                 messages_payload.append({"role": "tool", "content": f"Error executing command: {e}", "name": func_name})
-                    
+
                     # Continue the loop to let the agent evaluate the tool output and decide next steps
                     continue
                 else:
                     # No tools called. The agent is ready to give the final answer.
                     stream = ollama_client.chat(model="qwen2.5:3b", messages=messages_payload, stream=True)
                     full_ai_response = ""
-                    
+
                     if context_badge:
                         yield f"data: {json.dumps({'type': 'context', 'context': list(set(context_badge))})}\n\n"
-                        
+
                     for chunk in stream:
                         content = chunk["message"]["content"]
                         full_ai_response += content
                         yield f"data: {json.dumps({'type': 'content', 'content': content})}\n\n"
-                        
+
                     if citations_str:
                         sources_text = f"\\n\\n**Sources:**\\n{citations_str}"
                         full_ai_response += sources_text
                         yield f"data: {json.dumps({'type': 'content', 'content': sources_text})}\n\n"
-                        
+
                     # Save final AI answer to database
                     ai_msg = ChatMessage(
                         role="ai",
@@ -304,9 +305,9 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
                     new_db.add(ai_msg)
                     new_db.commit()
                     new_db.close()
-                    
+
                     return # Exit the generator completely
-            
+
             # If the loop finishes without returning, it means it hit the iteration limit
             yield f"data: {json.dumps({'type': 'content', 'content': '\\n\\n*Agent stopped after reaching maximum iterations.*'})}\n\n"
 

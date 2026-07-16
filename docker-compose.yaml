@@ -92,6 +92,27 @@ services:
       - ./searxng:/etc/searxng
     restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: rag_prometheus
+    ports:
+      - "9000:9000"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    restart: unless-stopped
+
+  grafana:
+      image: grafana/grafana-oss:latest
+      container_name: rag_grafana
+      ports:
+        - "3000:3000"
+      volumes:
+        - grafana_data:/var/lib/grafana
+      environment:
+        - GF_SECURITY_ADMIN_PASSWORD=admin
+      restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
+  grafana_data:
