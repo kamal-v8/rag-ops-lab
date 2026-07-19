@@ -92,3 +92,5 @@ duckduckgo-search
 beautifulsoup4
 requests
 prometheus-fastapi-instrumentator
+PyJWT==2.8.0
+passlib[bcrypt]==1.7.4

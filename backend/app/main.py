@@ -14,8 +14,10 @@ from pydantic import BaseModel
 from sentence_transformers import CrossEncoder
 from sqlalchemy.orm import Session
 
+from fastapi.security import OAuth2PasswordRequestForm
 from .database import Base, engine, get_db
-from .models import ChatMessage
+from .models import ChatMessage, User
+from .services.auth_service import get_current_user, verify_password, get_password_hash, create_access_token
 from .services.research_service import perform_deep_research
 from prometheus_fastapi_instrumentator import Instrumentator
 Base.metadata.create_all(bind=engine)
@@ -59,6 +61,35 @@ class ChatRequest(BaseModel):
     message: str
     force_web_search: bool = False
 
+class UserCreate(BaseModel):
+    username: str
+    password: str
+
+@app.post("/register", tags=["Auth"])
+async def register_user(user: UserCreate, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.username == user.username).first()
+    if db_user:
+        raise HTTPException(status_code=400, detail="Username already registered")
+    
+    hashed_password = get_password_hash(user.password)
+    new_user = User(username=user.username, hashed_password=hashed_password)
+    db.add(new_user)
+    db.commit()
+    return {"message": "User registered successfully"}
+
+@app.post("/login", tags=["Auth"])
+async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.username == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    access_token = create_access_token(data={"sub": user.username})
+    return {"access_token": access_token, "token_type": "bearer"}
+
 
 # @app.get("/health", tags=["System"])
 # async def health_check():
@@ -66,7 +97,7 @@ class ChatRequest(BaseModel):
 
 
 @app.post("/upload", tags=["Documents"])
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
     """Upload a .txt, .pdf, or .docx file, chunk it, and save the embeddings to ChromaDB."""
     if not collection:
         raise HTTPException(status_code=503, detail="ChromaDB not connected.")
@@ -123,7 +154,7 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @app.post("/chat", tags=["AI"])
-async def chat_endpoint(request: ChatRequest):
+async def chat_endpoint(request: ChatRequest, current_user: User = Depends(get_current_user)):
     try:
         response = ollama_client.chat(
             model="phi3", messages=[{"role": "user", "content": request.message}]
@@ -135,7 +166,7 @@ async def chat_endpoint(request: ChatRequest):
 
 
 @app.post("/rag-chat", tags=["AI"])
-async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
+async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Agentic router that decides whether to search web, search docs, or just chat."""
     try:
         # Save user message to DB
@@ -319,7 +350,7 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db))
 
 
 @app.get("/chat-history/{session_id}", tags=["AI"])
-async def get_chat_history(session_id: str, db: Session = Depends(get_db)):
+async def get_chat_history(session_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     messages = (
         db.query(ChatMessage)
         .filter(ChatMessage.session_id == session_id)
@@ -341,7 +372,7 @@ async def get_chat_history(session_id: str, db: Session = Depends(get_db)):
 
 
 @app.get("/sessions", tags=["AI"])
-async def get_sessions(db: Session = Depends(get_db)):
+async def get_sessions(db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Returns a list of all chat sessions."""
     from sqlalchemy import func
 
@@ -381,14 +412,14 @@ async def get_sessions(db: Session = Depends(get_db)):
 
 
 @app.delete("/sessions/{session_id}", tags=["AI"])
-async def delete_session(session_id: str, db: Session = Depends(get_db)):
+async def delete_session(session_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     db.query(ChatMessage).filter(ChatMessage.session_id == session_id).delete()
     db.commit()
     return {"status": "success"}
 
 
 @app.post("/deep-research", tags=["AI"])
-async def deep_research_endpoint(request: ChatRequest, db: Session = Depends(get_db)):
+async def deep_research_endpoint(request: ChatRequest, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Orchestrates the deep research flow and streams the response."""
     try:
         # Save user request to DB
