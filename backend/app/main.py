@@ -6,7 +6,7 @@ import uuid
 import chromadb
 import docx
 import fitz  # PyMuPDF
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from ollama import Client
