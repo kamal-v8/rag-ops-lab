@@ -171,7 +171,7 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db),
     try:
         # Save user message to DB
         user_msg = ChatMessage(
-            role="user", session_id=request.session_id, content=request.message
+            role="user", session_id=request.session_id, content=request.message, user_id=current_user.id
         )
         db.add(user_msg)
         db.commit()
@@ -331,6 +331,7 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db),
                         session_id=request.session_id,
                         content=full_ai_response,
                         context_used=json.dumps(list(set(context_badge))) if context_badge else "[]",
+                        user_id=current_user.id
                     )
                     new_db = next(get_db())
                     new_db.add(ai_msg)
@@ -353,7 +354,7 @@ async def rag_chat_endpoint(request: ChatRequest, db: Session = Depends(get_db),
 async def get_chat_history(session_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
     messages = (
         db.query(ChatMessage)
-        .filter(ChatMessage.session_id == session_id)
+        .filter(ChatMessage.session_id == session_id, ChatMessage.user_id == current_user.id)
         .order_by(ChatMessage.created_at)
         .all()
     )
@@ -380,6 +381,7 @@ async def get_sessions(db: Session = Depends(get_db), current_user: User = Depen
         db.query(
             ChatMessage.session_id, func.max(ChatMessage.created_at).label("updated_at")
         )
+        .filter(ChatMessage.user_id == current_user.id)
         .group_by(ChatMessage.session_id)
         .order_by(func.max(ChatMessage.created_at).desc())
         .all()
@@ -413,7 +415,7 @@ async def get_sessions(db: Session = Depends(get_db), current_user: User = Depen
 
 @app.delete("/sessions/{session_id}", tags=["AI"])
 async def delete_session(session_id: str, db: Session = Depends(get_db), current_user: User = Depends(get_current_user)):
-    db.query(ChatMessage).filter(ChatMessage.session_id == session_id).delete()
+    db.query(ChatMessage).filter(ChatMessage.session_id == session_id, ChatMessage.user_id == current_user.id).delete()
     db.commit()
     return {"status": "success"}
 
@@ -424,7 +426,7 @@ async def deep_research_endpoint(request: ChatRequest, db: Session = Depends(get
     try:
         # Save user request to DB
         user_msg = ChatMessage(
-            role="user", session_id=request.session_id, content=request.message
+            role="user", session_id=request.session_id, content=request.message, user_id=current_user.id
         )
         db.add(user_msg)
         db.commit()
@@ -471,6 +473,7 @@ async def deep_research_endpoint(request: ChatRequest, db: Session = Depends(get
                 session_id=request.session_id,
                 content=full_ai_response,
                 context_used='["Web Search"]',
+                user_id=current_user.id
             )
             new_db = next(get_db())
             new_db.add(ai_msg)

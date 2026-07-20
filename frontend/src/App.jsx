@@ -17,6 +17,7 @@ function App() {
 
   const handleLogout = () => {
     localStorage.removeItem("rag_jwt_token");
+    localStorage.removeItem("rag_session_id");
     setToken(null);
     setSessions([]);
     setMessages([]);
