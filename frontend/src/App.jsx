@@ -9,6 +9,58 @@ const getNewSessionId = () => {
 };
 
 function App() {
+  const [token, setToken] = useState(localStorage.getItem("rag_jwt_token") || null);
+  const [authMode, setAuthMode] = useState("login");
+  const [authError, setAuthError] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+
+  const handleLogout = () => {
+    localStorage.removeItem("rag_jwt_token");
+    setToken(null);
+    setSessions([]);
+    setMessages([]);
+  };
+
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError("");
+    try {
+      if (authMode === "register") {
+        const res = await fetch("http://localhost:8000/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password })
+        });
+        if (res.ok) {
+          setAuthMode("login");
+          setAuthError("Registration successful. Please login.");
+        } else {
+          const data = await res.json();
+          setAuthError(data.detail || "Registration failed");
+        }
+      } else {
+        const formData = new URLSearchParams();
+        formData.append("username", username);
+        formData.append("password", password);
+        const res = await fetch("http://localhost:8000/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: formData
+        });
+        if (res.ok) {
+          const data = await res.json();
+          localStorage.setItem("rag_jwt_token", data.access_token);
+          setToken(data.access_token);
+        } else {
+          setAuthError("Invalid username or password");
+        }
+      }
+    } catch (err) {
+      setAuthError("Connection error.");
+    }
+  };
+
   const [sessionId, setSessionId] = useState(() => {
     let sid = localStorage.getItem("rag_session_id");
     if (!sid) {
@@ -41,11 +93,16 @@ function App() {
   };
 
   const fetchSessions = async () => {
+    if (!token) return;
     try {
-      const res = await fetch("http://localhost:8000/sessions");
+      const res = await fetch("http://localhost:8000/sessions", {
+        headers: { "Authorization": `Bearer ${token}` }
+      });
       if (res.ok) {
         const data = await res.json();
         setSessions(data.sessions || []);
+      } else if (res.status === 401) {
+        handleLogout();
       }
     } catch (err) {
       console.error("Failed to load sessions");
@@ -54,12 +111,15 @@ function App() {
 
   useEffect(() => {
     fetchSessions();
-  }, []);
+  }, [token]);
 
   useEffect(() => {
     const fetchHistory = async () => {
+      if (!token) return;
       try {
-        const res = await fetch(`http://localhost:8000/chat-history/${sessionId}`);
+        const res = await fetch(`http://localhost:8000/chat-history/${sessionId}`, {
+          headers: { "Authorization": `Bearer ${token}` }
+        });
         if (res.ok) {
           const data = await res.json();
           if (data.history && data.history.length > 0) {
@@ -101,7 +161,10 @@ function App() {
   const handleDeleteSession = async (id, e) => {
     e.stopPropagation();
     try {
-      await fetch(`http://localhost:8000/sessions/${id}`, { method: 'DELETE' });
+      await fetch(`http://localhost:8000/sessions/${id}`, { 
+        method: 'DELETE',
+        headers: { "Authorization": `Bearer ${token}` }
+      });
       if (sessionId === id) {
         handleNewChat();
       } else {
@@ -127,7 +190,11 @@ function App() {
     formData.append("file", file);
 
     try {
-      const response = await fetch("http://localhost:8000/upload", { method: "POST", body: formData });
+      const response = await fetch("http://localhost:8000/upload", { 
+        method: "POST", 
+        headers: { "Authorization": `Bearer ${token}` },
+        body: formData 
+      });
       const data = await response.json();
       if (response.ok) {
         setUploadStatus({ type: "success", text: "UPLOAD_SUCCESS: " + data.message });
@@ -158,7 +225,10 @@ function App() {
       const endpoint = "http://localhost:8000/rag-chat";
       const response = await fetch(endpoint, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${token}`
+        },
         body: JSON.stringify({ session_id: sessionId, message: userMsg, force_web_search: isWebSearch }),
         signal: controller.signal
       });
@@ -227,6 +297,49 @@ function App() {
     }
   };
 
+  if (!token) {
+    return (
+      <div className="min-h-screen bg-canvas text-ink flex items-center justify-center font-mono text-[13px] relative overflow-hidden">
+        <div className="absolute inset-0 bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px] pointer-events-none"></div>
+        <div className="bg-surface-soft border border-hairline p-8 max-w-sm w-full shadow-2xl relative z-10">
+          <div className="absolute top-0 left-0 w-full h-1 bg-primary"></div>
+          <div className="flex items-center gap-2 mb-6 justify-center">
+             <div className="w-2 h-2 rounded-full bg-primary animate-pulse"></div>
+             <span className="font-display font-bold text-primary tracking-widest text-lg uppercase">RAG_OPS_LAB</span>
+          </div>
+          <div className="text-center mb-6 text-muted font-bold tracking-widest text-[10px] uppercase">
+            SECURE_ACCESS_REQUIRED
+          </div>
+          
+          {authError && (
+            <div className={`mb-4 px-3 py-2 text-center border text-[11px] font-bold tracking-widest uppercase ${authError.includes("successful") ? 'bg-success/10 border-success/50 text-success' : 'bg-error/10 border-error/50 text-error'}`}>
+              {authError}
+            </div>
+          )}
+
+          <form onSubmit={handleAuth} className="space-y-4">
+            <div>
+              <input type="text" placeholder="USERNAME" value={username} onChange={e => setUsername(e.target.value)} className="w-full bg-canvas border border-hairline px-4 py-3 focus:outline-none focus:border-primary text-primary transition-colors placeholder-muted-soft shadow-inner" required />
+            </div>
+            <div>
+              <input type="password" placeholder="PASSWORD" value={password} onChange={e => setPassword(e.target.value)} className="w-full bg-canvas border border-hairline px-4 py-3 focus:outline-none focus:border-primary text-primary transition-colors placeholder-muted-soft shadow-inner" required />
+            </div>
+            <button type="submit" className="w-full bg-primary hover:bg-primary-active text-canvas font-bold uppercase tracking-widest py-3 transition-colors mt-2 flex items-center justify-center gap-2">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path><polyline points="10 17 15 12 10 7"></polyline><line x1="15" y1="12" x2="3" y2="12"></line></svg>
+              {authMode === "login" ? "INITIALIZE_LOGIN" : "REGISTER_IDENTITY"}
+            </button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <button onClick={() => { setAuthMode(authMode === "login" ? "register" : "login"); setAuthError(""); }} className="text-muted hover:text-primary text-[10px] uppercase font-bold tracking-widest transition-colors border-b border-transparent hover:border-primary">
+              {authMode === "login" ? "REQUEST_NEW_IDENTITY [REGISTER]" : "RETURN_TO_LOGIN"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-canvas text-ink flex overflow-hidden selection:bg-primary/30 selection:text-primary font-mono text-[13px]">
       
@@ -242,8 +355,11 @@ function App() {
             INIT_NEW_SESSION
           </button>
         </div>
-        <div className="px-3 py-2 text-[10px] text-muted font-bold uppercase tracking-widest border-b border-hairline bg-surface-card/50">
-           ACTIVE_SESSIONS
+        <div className="px-3 py-2 text-[10px] text-muted font-bold uppercase tracking-widest border-b border-hairline bg-surface-card/50 flex justify-between items-center">
+           <span>ACTIVE_SESSIONS</span>
+           <button onClick={handleLogout} className="text-error hover:text-error/80" title="TERMINATE_SESSION (Logout)">
+             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>
+           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-2 space-y-1">
           {sessions.map(s => (
