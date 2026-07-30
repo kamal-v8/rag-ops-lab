@@ -1,4 +1,4 @@
-# RAG Ops Lab 
+# RAG Ops Lab
 
 ![CI/CD Pipeline](https://github.com/kamal-v8/rag-ops-lab/actions/workflows/ci.yml/badge.svg)
 ![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)
@@ -10,10 +10,10 @@ Everything runs locally, ensuring 100% privacy and requiring only 4GB of VRAM.
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 - **Agentic Function Calling:** Powered by Alibaba's `qwen2.5:3b`, the agent natively decides when to search your documents, browse the live web, or execute bash commands.
-- **Two-Stage RAG Pipeline:** 
+- **Two-Stage RAG Pipeline:**
   - *Stage 1 (Retrieval):* Uses `nomic-embed-text` and **ChromaDB** for lightning-fast dense vector retrieval.
   - *Stage 2 (Re-ranking):* Passes the top 15 results through an `ms-marco-MiniLM` **Cross-Encoder** to mathematically re-rank and filter out irrelevant context, preventing hallucinations.
 - **Live Web Research:** Integrated with a self-hosted **SearxNG** instance. When the AI doesn't know an answer, it autonomously searches the internet, scrapes the top 3 URLs, and synthesizes a cited report.
@@ -22,7 +22,7 @@ Everything runs locally, ensuring 100% privacy and requiring only 4GB of VRAM.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```mermaid
 flowchart TD
@@ -46,7 +46,7 @@ flowchart TD
 
 ---
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 | Component | Tech Used | Purpose |
 | :--- | :--- | :--- |
@@ -61,37 +61,45 @@ flowchart TD
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Clone the repository
+
 ```bash
 git clone https://github.com/kamal-v8/rag-ops-lab.git
 cd rag-ops-lab
 ```
 
 ### 2. Start the infrastructure
+
 Ensure you have Docker and Docker Compose installed.
+
 ```bash
 docker compose -f docker-compose.yaml -f docker-compose.nvidia.yaml up -d
 ```
+
 *(Note: Omit `-f docker-compose.nvidia.yaml` if you are not running on an NVIDIA GPU)*
 
 ### 3. Pull the AI Models
+
 Once Ollama is running, download the required models into your persistent bind mount:
+
 ```bash
 docker compose exec ollama ollama pull qwen2.5:3b
 docker compose exec ollama ollama pull nomic-embed-text
 ```
 
 ### 4. Access the UI
+
 Open your browser and navigate to:
+
 ```text
 http://localhost:3000
 ```
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 - `/backend/` - FastAPI application, Agentic Loop, and Cross-Encoder logic.
 - `/frontend/` - React SPA with real-time UI components.
@@ -101,5 +109,6 @@ http://localhost:3000
 
 ---
 
-## 📝 License
+## License
+
 MIT License
