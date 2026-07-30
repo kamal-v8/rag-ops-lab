@@ -1,3 +1,5 @@
+"""Test Trigger"""
+
 #!/usr/bin/env python3
 """
 Zed Test Script for RAG Ops Lab
@@ -19,13 +21,16 @@ BLUE = "\033[94m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
 
+
 def print_section(title):
     print(f"\n{BOLD}{BLUE}=== {title} ==={RESET}")
+
 
 def print_result(name, success, message=""):
     status = f"{GREEN}[PASS]{RESET}" if success else f"{RED}[FAIL]{RESET}"
     msg = f" - {message}" if message else ""
     print(f"  {status} {name}{msg}")
+
 
 def check_port(host, port):
     try:
@@ -33,6 +38,7 @@ def check_port(host, port):
             return True
     except (socket.timeout, ConnectionRefusedError, OSError):
         return False
+
 
 def check_http(url):
     try:
@@ -44,6 +50,7 @@ def check_http(url):
     except Exception:
         return False
 
+
 def main():
     print(f"{BOLD}Running RAG Ops Lab Diagnostics...{RESET}\n")
 
@@ -51,7 +58,7 @@ def main():
     print_section("Python Environment Info")
     print(f"  Python Version : {sys.version}")
     print(f"  Executable     : {sys.executable}")
-    
+
     # 2. Check Package Imports
     print_section("Verifying Python Library Imports")
     libraries = [
@@ -62,7 +69,7 @@ def main():
         ("sentence_transformers", "sentence-transformers"),
         ("bs4", "beautifulsoup4"),
     ]
-    
+
     for lib_module, lib_name in libraries:
         try:
             __import__(lib_module)
@@ -91,14 +98,21 @@ def main():
             url = f"http://{host}:{port}"
             if port in [8000, 5173, 8001, 11433, 8080, 9000, 3000]:
                 is_alive = check_http(url)
-                status_msg = f"Port {port} open, HTTP responding" if is_alive else f"Port {port} open, but HTTP error"
+                status_msg = (
+                    f"Port {port} open, HTTP responding"
+                    if is_alive
+                    else f"Port {port} open, but HTTP error"
+                )
                 print_result(f"{name} ({desc})", True, status_msg)
             else:
                 print_result(f"{name} ({desc})", True, f"Port {port} open")
         else:
-            print_result(f"{name} ({desc})", False, f"Port {port} is closed/unreachable")
+            print_result(
+                f"{name} ({desc})", False, f"Port {port} is closed/unreachable"
+            )
 
     print(f"\n{BOLD}Diagnostic run complete!{RESET}\n")
+
 
 if __name__ == "__main__":
     main()
