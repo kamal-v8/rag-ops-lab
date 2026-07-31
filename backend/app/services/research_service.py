@@ -30,7 +30,7 @@ def perform_deep_research(query: str, ollama_client) -> str:
         search_resp.raise_for_status()
         search_data = search_resp.json()
         results = search_data.get("results", [])[:3]
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.error(f"SearxNG Search Failed: {e}")
         results = []
 
@@ -56,7 +56,7 @@ def perform_deep_research(query: str, ollama_client) -> str:
                 page_text = " ".join([p.get_text() for p in paragraphs])
                 # Truncate to avoid blowing up the context window
                 scraped_content.append(f"Source: {title}\n{page_text[:1500]}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             logger.warning(f"Failed to scrape {url}: {e}")
 
     # 3. Prepare the Prompts

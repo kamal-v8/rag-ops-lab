@@ -18,7 +18,7 @@ async def execute_system_command(user_query: str):
     
     try:
         # 2. Execute the command securely inside the container
-        result = subprocess.run(  # noqa: ASYNC221
+        result = subprocess.run(
             command, 
             shell=True,
             check=False, 
@@ -38,5 +38,5 @@ async def execute_system_command(user_query: str):
         
     except subprocess.TimeoutExpired:
          yield "data: {{\"type\": \"content\", \"content\": \"ERR: Command timed out after 10 seconds.\\n\"}}\n\n"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
          yield f"data: {{\"type\": \"content\", \"content\": \"ERR: {e!s}\\n\"}}\n\n"

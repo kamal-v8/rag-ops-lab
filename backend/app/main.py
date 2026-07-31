@@ -9,17 +9,23 @@ import fitz  # PyMuPDF
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.security import OAuth2PasswordRequestForm
 from ollama import Client
+from prometheus_fastapi_instrumentator import Instrumentator
 from pydantic import BaseModel
 from sentence_transformers import CrossEncoder
 from sqlalchemy.orm import Session
 
-from fastapi.security import OAuth2PasswordRequestForm
 from .database import Base, engine, get_db
 from .models import ChatMessage, User
-from .services.auth_service import get_current_user, verify_password, get_password_hash, create_access_token
+from .services.auth_service import (
+    create_access_token,
+    get_current_user,
+    get_password_hash,
+    verify_password,
+)
 from .services.research_service import perform_deep_research
-from prometheus_fastapi_instrumentator import Instrumentator
+
 Base.metadata.create_all(bind=engine)
 
 logging.basicConfig(level=logging.INFO)
