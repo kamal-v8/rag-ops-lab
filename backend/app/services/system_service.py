@@ -1,5 +1,6 @@
-import subprocess
 import asyncio
+import subprocess
+
 from ollama import Client
 
 ollama_client = Client(host="http://ollama:11434")
@@ -17,9 +18,10 @@ async def execute_system_command(user_query: str):
     
     try:
         # 2. Execute the command securely inside the container
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: ASYNC221
             command, 
-            shell=True, 
+            shell=True,
+            check=False, 
             capture_output=True, 
             text=True, 
             timeout=10 # Prevent infinite hangs
@@ -36,5 +38,5 @@ async def execute_system_command(user_query: str):
         
     except subprocess.TimeoutExpired:
          yield "data: {{\"type\": \"content\", \"content\": \"ERR: Command timed out after 10 seconds.\\n\"}}\n\n"
-    except Exception as e:
-         yield f"data: {{\"type\": \"content\", \"content\": \"ERR: {str(e)}\\n\"}}\n\n"
+    except Exception as e:  # noqa: BLE001
+         yield f"data: {{\"type\": \"content\", \"content\": \"ERR: {e!s}\\n\"}}\n\n"

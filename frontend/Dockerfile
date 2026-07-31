@@ -1,11 +1,11 @@
 #Dockerfile for the frontend application
-FROM node:24-alpine
+FROM node:20-alpine
 
 WORKDIR /app
 
 COPY package*.json  ./
 
-RUN npm ci
+RUN npm ci 
 
 COPY . .
 
