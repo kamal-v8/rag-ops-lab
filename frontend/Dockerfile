@@ -1,3 +1,4 @@
+#Dockerfile for the frontend application
 FROM node:24-alpine
 
 WORKDIR /app
